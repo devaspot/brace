@@ -21,7 +21,6 @@
              io_lib
              code
              filename
-             cucumberl
              joxa-assert)
     (use (joxa-core :only (try/1 if/3 +/1 when/2 unless/2 !=/2))
          (erlang :only (==/2))))
@@ -72,24 +71,6 @@
          (unless (== [] (proper/module mod))
            (init/stop 1)))))
 
-(defn+ gather-features-from-app (path)
-  (let* (feature-path (filename/join path "features"))
-    (filelib/fold_files feature-path ".+\.feature" :true
-                        (fn (name names)
-                            (name . names))
-                        [])))
-
-(defn+ cucumberl-test-app (path)
-    (joxa-lists/dolist (feature (gather-features-from-app path))
-                       (io/format "Running feature ~s~n" [feature])
-                       (try
-                        (case (cucumberl/run feature)
-                          ({:ok, _} :ok)
-                          (_
-                           (init/stop 1)))
-                        (catch ({_ _}
-                                (init/stop 1))))))
-
 (defn+ main (args)
   ;; Path comes in as an atom from the command line
   (case args
@@ -97,8 +78,6 @@
      (eunit-test-app (erlang/atom_to_list path)))
     ([:proper path]
      (proper-test-app (erlang/atom_to_list path)))
-    ([:cucumberl path]
-     (cucumberl-test-app (erlang/atom_to_list path)))
     ([:print path]
      (io/format "~p~n"
                 [(gather-modules-from-app
