@@ -1,0 +1,17 @@
+(ns anonymous-funs
+    (use (erlang :only (==/2))))
+
+(defn (+ 2 3))
+(defn internal-test ()
+  (fn (arg1 arg2)
+      {:hello arg1 arg2}))
+
+(defn+ do-test ()
+  (let* (z (internal-test)
+         x (fn (arg1 arg2)
+               {:hello arg1 arg2})
+        y (x 1 2))
+    (do
+        (apply internal-test/0)
+      (apply x 1 2)
+      (apply erlang/phash2/1 22))))

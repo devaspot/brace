@@ -1,0 +1,20 @@
+(ns lispchat (require erlang io joxa-core n2o wf))
+
+(defn+ body() [(n2o/panel   {:id :history})
+               (n2o/textbox {:id :message})
+               (n2o/button  {:id :send}
+                            {:body "Chat"}
+                            {:postback {:chat :id}}
+                            {:source :message}) ])
+
+(defn+ main()  (n2o/dtl {:app :n2o_sample}
+                        {:file "index"}
+                        {:bindings [{:title "Title"} {:body (body)}]}))
+
+(defn+ event(body)
+    (case body
+        (pattern :init (io/format "oook~n"))))
+
+(defn+ test() (do 
+                (event :init)
+                (io/format "hello ~p~n" [(main)])))

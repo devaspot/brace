@@ -1,0 +1,20 @@
+(ns recs (require erlang io joxa-core joxa-records))
+(defmacro+ elm (m t &rest x)
+    `(joxa-records/defrec+ ({ancestor :element} {module ~m} id actions {class ""} {style ""} {html_tag ~t} {title ""}
+                            {source ""} {data_fields ""} {aria_states ""} {body ""}
+                            {role :undefined} {tabindex :undefined} {show_if :true}) ~@x))
+
+(ns dtl (require joxa-core joxa-records recs))     (recs/elm :element_dtl :undefined ({file "index"} {bindings ""} {app :web} {folder "priv/templates"} {ext "html"} {bind_script :true}))
+(ns span (require joxa-core joxa-records recs))    (recs/elm :element_span :undefined ())
+(ns panel (require joxa-core joxa-records recs))   (recs/elm :element_panel :div ())
+(ns button (require joxa-core joxa-records recs))  (recs/elm :element_button :undefined ({type "button"} name value postback delegate disabled))
+(ns link (require joxa-core joxa-records recs))    (recs/elm :element_link :undefined (taget {url "javascript:void(0);"} postback delegate name))
+(ns textbox (require joxa-core joxa-records recs)) (recs/elm :element_textbox :undefined (value disabled {maxlength ""} {placeholder ""} next postback delegate name))
+
+(ns n2o (require joxa-core joxa-records dtl span button link textbox panel recs))
+(defn+ dtl(&rest x) (dtl/make-fields `(~@x)))
+(defn+ span(&rest x) (span/make-fields `(~@x)))
+(defn+ link(&rest x) (link/make-fields `(~@x)))
+(defn+ panel(&rest x) (panel/make-fields `(~@x)))
+(defn+ button(&rest x) (button/make-fields `(~@x)))
+(defn+ textbox(&rest x) (textbox/make-fields `(~@x)))

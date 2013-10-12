@@ -1,0 +1,84 @@
+;;; Licensed under the Apache License, Version 2.0 you may not use
+;;; this file except in compliance with the License.  You may obtain a
+;;; copy of the License at http://www.apache.reorg/licenses/LICENSE-2.0
+;;;
+;;; This module provides an escript oriented interface to the joxa system.
+(ns joxa-cc-wkr
+    (require joxa-compiler
+             joxa-concurrent-compiler
+             joxa-otp-gen-server
+             joxa-lists
+             io
+             (lists :joxify)
+             (sets :joxify)
+             (filelib :joxify)
+             (filename :joxify)
+             (gen_server :joxify)
+             (proplists :joxify)
+             (erlang :joxify))
+    (use (erlang :only (not/1
+                        </2
+                        =:=/2
+                        or/2))
+         (joxa-lists :only (dolist/2))
+         (joxa-core :only (let/2 if/3))))
+
+(defn+ build (pid)
+  "Just tell the specified pid to go ahead and build normally, if the
+file has not changed then no need to actually build."
+  (gen-server/cast pid :do-build))
+
+(defn do-build (state)
+  "Actually builds using the joxa compiler"
+  (let ({file opts ({namespace _} . _)} state
+        outdir (proplists/get-value :outdir opts "./")
+        target (filename/join [outdir (lists/flatten
+                                       (erlang/atom-to-list namespace) ".beam")]))
+
+    (if (< (filelib/last-modified target) (filelib/last-modified file))
+      (let (result (joxa-compiler/has-errors? (joxa-compiler/do-compile file opts)))
+        (case result
+          (:true
+           (joxa-concurrent-compiler/build-failure file)
+           (erlang/exit :build-failure))
+          (:false
+           (joxa-concurrent-compiler/build-success file)
+           (erlang/exit :normal))))
+      ;; it's not been modified, so don't build
+      (do
+        (joxa-concurrent-compiler/build-skip file)
+        (erlang/exit :normal)))))
+
+(defn+ handle-cast (request state)
+  "We only wait for the do-build everything else happens in init"
+  (case request
+    (:do-build
+     (do-build state)
+     {:noreply state})))
+
+(defn+ handle-info (request state)
+  (case request
+    (:timeout
+     (let ({file opts} state)
+       (case (joxa-compiler/info file)
+         ({:error error}
+          (io/format :standard_error "~s: Error: ~p~n" [file error])
+          (joxa-concurrent-compiler/build-failure file)
+          {:stop error state})
+         ([]
+          (io/format :standard_error "~s:0:0 No namespace definition~n" [file])
+          (joxa-concurrent-compiler/build-failure file)
+          {:stop :invalid-namespace-definition state})
+         (namespace-deps-list
+          (joxa-concurrent-compiler/register-namespace file namespace-deps-list)
+          {:noreply {file opts namespace-deps-list}}))))))
+
+(defn+ terminate (_reason state)
+  :ok)
+
+(defn+ init (args)
+  (let ([file opts] args)
+    {:ok {file opts} 0}))
+
+(joxa-otp-gen-server/worker-start-link file opts)
+(joxa-otp-gen-server/implement-missing joxa-cc-wkr)

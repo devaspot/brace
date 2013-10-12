@@ -1,0 +1,615 @@
+(ns joxa-compiler
+    (require (erlang :joxify)
+             (lists :joxify)
+             (cerl :joxify)
+             (io_lib :joxify)
+             (io :joxify)
+             (file :joxify)
+             (code :joxify)
+             (ec_dictionary :joxify)
+             (init :joxify)
+             (getopt :joxify)
+             (re :joxify)
+             (filename :joxify)
+             (filelib :joxify)
+             (compile :joxify)
+             (sets :joxify)
+             (core_pp :joxify)
+             (proplists :joxify)
+             joxa-cmp-ctx
+             joxa-cmp-path
+             joxa-cmp-util
+             joxa-cmp-error-format
+             joxa-cmp-joxa-info
+             joxa-cmp-checks
+             joxa-cmp-parser
+             joxa-cmp-defs
+             joxa-cmp-ns))
+
+;; Compilation Infrastructure
+;; -------------------------
+;;
+;; The following functions comprise most of the UI for the Joxa
+;; compiler. Organizing the compilation and adding various metadata
+;; functions.
+
+(definline handle-errors-and-warnings (ctx errors warnings)
+  (case (erlang/> (erlang/length errors) 0)
+    (:true
+     (joxa-cmp-ctx/add-error-ctx ctx (joxa-cmp-path/new-path) {:system-errors errors}))
+    (:false
+     :ok))
+  (case (erlang/> (erlang/length warnings) 0)
+    (:true
+     (joxa-cmp-ctx/add-warning-ctx ctx (joxa-cmp-path/new-path) {:system-warnings warnings}))
+    (:false
+     :ok)))
+
+
+(defn gather-inline-funs (ctx)
+  (let* (defs (joxa-cmp-ctx/definitions-ctx ctx)
+        inlinables
+        (lists/foldl (fn (cvar acc)
+                         (case cvar
+                           ({name-arity {_ body _ _}}
+                            (case (lists/member :inline  (cerl/get_ann body))
+                              (:true
+                               (name-arity . acc))
+                               (:false acc)))))
+                     []
+                     defs))
+    (case inlinables
+      ([] [])
+      (_
+       {:inline inlinables}))))
+
+(definline hipe-option (ctx)
+  (let* (attrs (joxa-cmp-ctx/attrs-ctx ctx))
+    (case (lists/any (fn (val)
+                         (case val
+                           ({k v}
+                            (erlang/and (erlang/== (cerl/concrete k) :pragma)
+                                        (erlang/== (cerl/concrete v) :native)))))
+                     attrs)
+      (:true
+       (case (erlang/system_info :hipe_architecture)
+         (:undefined [])
+         (_ :native)))
+      (_ []))))
+
+(definline compile-options (ctx type)
+  (let* (additional-opts (case type
+                          (:final [(hipe-option ctx) :inline (gather-inline-funs ctx)])
+                          (_ [])))
+    (lists/flatten [(joxa-cmp-ctx/options-ctx ctx)
+                    additional-opts
+                    :from_core
+                    :binary
+                    :export_all
+                    :return_errors
+                    :return_warnings])))
+
+(defn erl-comp (ctx cerl-ast type)
+  (case type
+    (:final
+     (case (lists/member :to_core (joxa-cmp-ctx/options-ctx ctx))
+       (:true
+        [(core-pp/format cerl-ast) \\n])
+       (:false
+        (case (lists/member :to_ast (joxa-cmp-ctx/options-ctx ctx))
+          (:true
+           (io-lib/format "~p" [cerl-ast]))
+          (_
+           (case (compile/forms cerl-ast
+                                (compile-options ctx type))
+             ({ok [] result []}
+              result)
+             ({ok errors result warnings}
+              (handle-errors-and-warnings ctx errors warnings)
+              result)
+             ({error errors warnings}
+              (handle-errors-and-warnings ctx errors warnings)
+              :error)))))))
+    (_
+     (case (compile/forms cerl-ast [:debug_info
+                                    :from_core
+                                    :return_errors
+                                    :return_warnings
+                                    :binary])
+       ({ok [] result []}
+        result)
+       ({ok errors result warnings}
+        (handle-errors-and-warnings ctx errors warnings)
+        result)
+       ({error errors warnings}
+        (handle-errors-and-warnings ctx errors warnings)
+        :error)))))
+
+(defn make-namespace-info (ctx)
+  (let* (namespace-name (cerl/c_atom (joxa-cmp-ctx/namespace-name-ctx ctx))
+        argless-body (cerl/c_call (cerl/c_atom :erlang)
+                                  (cerl/c_atom :get_module_info)
+                                  [namespace-name])
+        detail-var (joxa-cmp-util/gensym)
+        var-name (cerl/c_var detail-var)
+        arg-body (cerl/c_call (cerl/c_atom :erlang)
+                              (cerl/c_atom :get_module_info)
+                              [namespace-name var-name]))
+    (joxa-cmp-ctx/add-exported-def-ctx (joxa-cmp-path/new-path) ctx
+                          [:compiler_generated] :module_info []
+                          argless-body
+                          :replace)
+    (joxa-cmp-ctx/add-exported-def-ctx (joxa-cmp-path/new-path) ctx
+                          [:compiler_generated] :module_info
+                          [var-name] arg-body :replace)))
+
+(defn compile-types (ctx)
+  (let* (exported-types (sets/to_list (joxa-cmp-ctx/type-exports-ctx ctx))
+        all-types (ec-dictionary/to-list (joxa-cmp-ctx/types-ctx ctx)))
+    ({(cerl/c_atom :export_type) (cerl/make_data {:atomic exported-types} [])} .
+     (lists/map (fn (el)
+                    (case el
+                      ({_ attr}
+                       attr))) all-types))))
+
+(defn+ compilable? (ctx)
+  (erlang/not (erlang/or (joxa-cmp-checks/has-unresolved-dependencies? ctx)
+                          (joxa-cmp-checks/has-errors-or-warnings? ctx))))
+
+(defn post-process-macros (ctx)
+  (let* (unexported-macros (joxa-cmp-ctx/unexported-macros-ctx ctx)
+        exports0 (joxa-cmp-ctx/exports-ctx ctx)
+        exports1 (sets/filter (fn (export)
+                                  (case export
+                                    ({fun arity _}
+                                     (erlang/not (lists/member {fun arity}
+                                                               unexported-macros)))))
+                              exports0))
+    (joxa-cmp-ctx/exports-ctx ctx exports1)))
+
+(defn post-processing (compile-type ctx)
+  (case compile-type
+    (:final
+     (post-process-macros ctx))
+    (_
+     :ok)))
+
+;; There are certain errors that get regenernated each compilation
+;; attempt. Those errors are produced by the post checking and the
+;; core erlang compiler. We need to remove them before each
+;; compilation, otherwise there is just a nasty buildup that serves no
+;; purpose.
+(defn clear-post-comp-errors (ctx)
+  (let* (errors (joxa-cmp-ctx/errors-ctx ctx)
+        warnings (joxa-cmp-ctx/warnings-ctx ctx))
+
+    (joxa-cmp-ctx/errors-ctx ctx (lists/filter (fn (el)
+                                     (case el
+                                       ({{:system-errors _} _}
+                                        :false)
+                                       ({{:undefined-functions _} _}
+                                        :false)
+                                       (_
+                                        :true)))
+                                 errors))
+    (joxa-cmp-ctx/warnings-ctx ctx (lists/filter (fn (el)
+                                     (case el
+                                       ({{:system-warnings _} _}
+                                        :false)
+                                       ({{:undefined-functions _} _}
+                                        :false)
+                                       (_
+                                        :true)))
+                                 warnings))))
+
+(defn+ compile-context (ctx compile-type)
+  (clear-post-comp-errors ctx)
+  (case (compilable? ctx)
+    (:true
+     (post-processing compile-type ctx)
+     (make-namespace-info ctx)
+     (joxa-cmp-joxa-info/make-joxa-info ctx)
+     (let* (annots (joxa-cmp-ctx/line-ctx ctx)
+           namespace-name (cerl/ann_c_atom annots
+                                           (joxa-cmp-ctx/namespace-name-ctx ctx))
+           exports (joxa-cmp-ctx/get-context-exports ctx)
+           attrs (lists/append (joxa-cmp-ctx/attrs-ctx ctx)
+                               (compile-types ctx))
+           defs (lists/map (fn (def)
+                               (case def
+                                 ({var body _ _}
+                                  {var body})
+                                 (else
+                                  (erlang/throw {:error-processing-defs else}))))
+                           (joxa-cmp-ctx/get-definitions ctx))
+           result (erl-comp ctx (cerl/ann_c_module annots namespace-name exports attrs defs)
+                            compile-type))
+       (joxa-cmp-ctx/result-ctx ctx result)))
+    (:false
+     (when (erlang/== compile-type :final))
+     :error)
+    (:false
+     :uncompilable)))
+
+;; The goal with compiler messages to print them out in a well
+;; understood format. Taking the approach specified by the GNU Coding
+;; standards and understood by emacs makes good sense.
+;;
+;;     sourcefile:lineno:column: message
+;;
+;; http://www.gnu.org/prep/standards/html_node/Errors.html
+(defn print-compiler-message (type message)
+  (case message
+    ({{:system-errors errors} _}
+     (joxa-cmp-error-format/print-erl-errors-or-warnings errors))
+    ({{:system-warnings warnings} _}
+     (joxa-cmp-error-format/print-erl-errors-or-warnings warnings))
+    ({{:parse-fail expected {line column}} {file-name _}}
+     (io/format "~s:~p:~p *~p* parsing failed, expected ~p~n" [file-name line column type expected]))
+    ({detail {file-name {line column}}}
+     (io/format "~s:~p:~p *~p* ~s~n" [file-name line column type (joxa-cmp-error-format/format-detail detail)]))
+    (msg
+     (io/format "UNKNOWN_TYPE ~p~n" [msg]))))
+
+(defn report-errors-warnings (ctx)
+  (let* (warnings (lists/reverse (joxa-cmp-ctx/warnings-ctx ctx))
+        errors (lists/reverse (joxa-cmp-ctx/errors-ctx ctx)))
+    (lists/foreach (fn (message)
+                       (print-compiler-message :warning message))
+                   warnings)
+    (lists/foreach (fn (message)
+                       (print-compiler-message :error message))
+                   errors)))
+
+(defn should-load? (options)
+  (erlang/not
+   (lists/any (fn (no-compile-option)
+                  (lists/member no-compile-option options))
+              '(to_ast to_core bootstrap))))
+
+(defn post-compile-process (ctx)
+  (case (should-load? (joxa-cmp-ctx/options-ctx ctx))
+    (:false :ok)
+    (:true
+     (let* (namespace-name (joxa-cmp-ctx/namespace-name-ctx ctx)
+            filename (joxa-cmp-ctx/filename-ctx ctx)
+            load-result (code/load_binary namespace-name filename
+                                          (joxa-cmp-ctx/result-ctx ctx)))
+       (case load-result
+         ({:module namespace-name}
+          ;; The current namespace should always have up to date
+          ;; requirements
+          (joxa-cmp-ctx/add-require-ctx ctx namespace-name)
+          :ok)
+         (_
+          (erlang/throw {:unable-to-load filename})))))))
+
+(defn+ do-final-comp (ctx)
+  (let* (options (joxa-cmp-ctx/options-ctx ctx)
+        result (compile-context ctx :final))
+    (case result
+      (:uncompilable
+         :error)
+      (:error
+       :error)
+      (:ok (post-compile-process ctx)))))
+
+;; Iterative Compilation
+;; ---------------------
+;;
+;; This is the primary interface for users of the joxa system. It
+;; implements the normal iterative approach to compilation that allows
+;; the full use of the language.
+
+(defn internal-forms (ctx input)
+  (case (joxa-cmp-parser/has-more-data-to-parse input)
+    (:false
+     :ok)
+    (:true
+     (case (joxa-cmp-parser/parse ctx input)
+       ({:error _}
+        :error)
+       ({ast0 (= rest {:parse-output _ path _})}
+        (joxa-cmp-defs/make-forms (joxa-cmp-path/traverse-path path) ctx ast0)
+        (case (compile-context ctx :intermediate)
+          (:uncompilable
+           (internal-forms ctx rest))
+          (:ok
+           (post-compile-process ctx)
+           (internal-forms ctx rest))))))))
+
+(defn forms (ctx binary options)
+  (joxa-cmp-ctx/set-context-all-ctx ctx [{:options options}])
+  (internal-forms ctx binary)
+  (do-final-comp ctx)
+  (joxa-cmp-ctx/get-raw-context ctx))
+
+(defn+ forms (binary options)
+  (case (joxa-cmp-ctx/start-context)
+    ({:ok ctx}
+     (let* (result (forms ctx binary options))
+       (report-errors-warnings ctx)
+       (joxa-cmp-ctx/stop-context ctx)
+       result))))
+
+;; Namespace Info
+;; -----------
+;;
+;; This does not compile a file. It simply evaluates a namespace enough
+;; to get a complete context. there by providing information about the
+;; namespace.
+
+(defn get-require (form acc)
+  (case form
+    ([]
+     acc)
+    (((namespace-name . clause-body) . rest)
+     (when (erlang/is_atom namespace-name))
+     (get-require rest (namespace-name . acc)))
+    ((namespace-name . rest)
+     (when (erlang/is_atom namespace-name))
+     (get-require rest (namespace-name . acc)))
+    (_
+     acc)))
+
+(defn get-use (ctx form acc)
+  (case form
+    ([]
+     acc)
+    (((use-namespace-name . clause-body) . rest)
+     (when (erlang/is_atom use-namespace-name))
+     (get-use ctx rest (use-namespace-name . acc)))
+    ((use-namespace-name . rest)
+     (when (erlang/is_atom use-namespace-name))
+     (get-use ctx rest (use-namespace-name . acc)))
+    (_
+     (joxa-cmp-ctx/add-error-ctx ctx (joxa-cmp-path/new-path) {:invalid-use :invalid-form form})
+     acc)))
+
+(defn internal-info (ctx input acc)
+  (case (joxa-cmp-parser/has-more-data-to-parse input)
+    (:false
+     acc)
+    (:true
+     (case (joxa-cmp-parser/parse ctx input)
+       ({:error _}
+        [])
+       ({(:ns . (namespace-name . rest)) rest-input}
+        (internal-info ctx rest-input
+                       ({namespace-name
+                          (lists/flatten (lists/foldl
+                                          (fn (form iacc)
+                                              (case form
+                                                ((:require . req-rest)
+                                                 ((get-require req-rest []) . iacc))
+                                                ((:use . use-rest)
+                                                 ((get-use ctx use-rest []) . iacc))
+                                                (_
+                                                 iacc))) [] rest))
+                          } . acc)))
+       ({_ rest-input}
+        (internal-info ctx rest-input acc))))))
+
+(defn info (ctx binary options)
+  (joxa-cmp-ctx/set-context-all-ctx ctx [{:options options}])
+  (internal-info ctx binary []))
+
+(defn+ info (input options)
+  (case input
+    (_ (when (erlang/is-binary input))
+       (case (joxa-cmp-ctx/start-context)
+         ({:ok ctx}
+          (let* (result (info ctx input options))
+            (joxa-cmp-ctx/stop-context ctx)
+            result))))
+    (_ (when (erlang/is-list input))
+     (case (file/read_file input)
+       ({:ok binary}
+        (info binary options))
+       ({:error reason}
+        {:error  {:file-access reason input}})))))
+
+(defn+ info (file)
+  (info file []))
+
+;; Interactive Compilation
+;; -----------------------
+;;
+;; This section describes interactive compilation. That is the
+;; compilation as it is designed be used in something like joxa-shell
+;; or the eventual swank implementation for joxa. It is probably not
+;; of interest to your average coder.
+;;
+;; Interactive basically takes the iterative approach and splits it up
+;; into an API that can be called externally by tha user.
+
+(defn+ clear-errors (ctx)
+  (joxa-cmp-ctx/errors-ctx ctx [])
+  (joxa-cmp-ctx/warnings-ctx ctx []))
+
+(defn+ start-interactive ()
+  (case (joxa-cmp-ctx/start-context)
+    ({:ok ctx}
+     ctx)))
+
+(defn make-interactive-fun (ctx name ast)
+  (case (joxa-cmp-defs/make-function (joxa-cmp-path/new-path) ctx ast)
+    ({_ arg-list body}
+     (joxa-cmp-ctx/add-exported-def-ctx (joxa-cmp-path/new-path) ctx [] name arg-list body :replace))))
+
+(defn make-dispatch (ctx interactive-name ast)
+  (let* (dispatchables
+        '(
+          defn+
+          defn
+          definline
+          deftype
+          deftype+
+          defspec
+          ns
+          defmacro
+          do
+          ))
+    (case ast
+      ((:ns . _)
+       (joxa-cmp-ns/make-namespace (joxa-cmp-path/new-path) ctx ast)
+       :defn)
+      ((element . rest)
+       (case (lists/member element dispatchables)
+         (:true
+          (joxa-cmp-defs/make-definition (joxa-cmp-path/new-path) ctx ast))
+         (:false
+          (case element
+            (:require
+             (joxa-cmp-ns/make-require (joxa-cmp-path/new-path) ctx rest)
+             :defn)
+            (:use
+             (joxa-cmp-ns/make-use {0 0} ctx rest :undefined [])
+             :defn)
+            (_
+             (make-interactive-fun ctx interactive-name [interactive-name [] ast])
+             :expr)))))
+      (_
+       (make-interactive-fun ctx interactive-name  [:interactive-name [] ast])
+       :expr))))
+
+(defn internal-comp-interactive (ctx interactive-name input result0)
+  (case (joxa-cmp-parser/has-more-data-to-parse input)
+    (:false
+     (do-final-comp ctx)
+     (report-errors-warnings ctx)
+     result0)
+    (:true
+     (case (joxa-cmp-parser/parse ctx input)
+       ({:error rest}
+        {:error rest})
+       ({ast0 (= rest {:parse-output _ path _})}
+        (let* (result1 (case  (make-dispatch ctx interactive-name ast0)
+                        (:expr
+                         :expr)
+                        (_
+                         result0)))
+          (case (compile-context ctx :intermediate)
+            (:uncompilable
+             (internal-comp-interactive ctx interactive-name rest result1))
+            (:ok
+             (post-compile-process ctx)
+             (internal-comp-interactive ctx interactive-name rest result1)))))))))
+
+(defn+ comp-interactive (ctx interactive-name input options)
+  (joxa-cmp-ctx/set-context-all-ctx ctx [{:options options}])
+  (internal-comp-interactive ctx interactive-name input :defn))
+
+(defn+ stop-interactive (ctx)
+  (let* (raw-ctx (joxa-cmp-ctx/get-raw-context ctx))
+    (joxa-cmp-ctx/stop-context ctx)
+    raw-ctx))
+
+
+
+
+;; Compilation Dispatch Framework
+;; ------------------------------
+;;
+;; This provides a means by which the correct compilation namespace and
+;; result 'saving' namespace might be found.
+(defn get-extension (options)
+  (case (lists/member :to_ast options)
+    (:false
+     (case (lists/member :to_core options)
+       (:false
+        ".beam")
+       (:true
+        ".core")))
+    (:true
+     ".ast")))
+
+(defn save-output (options binary ctx)
+  (let* (out-dir (proplists/get_value :outdir options :undefined))
+    (case out-dir
+      (:undefined
+       :ok)
+      (out-dir
+       (let* (namespace-name (joxa-cmp-ctx/get-context :namespace-name ctx)
+             path (re/split (erlang/atom_to_list  namespace-name) "\\.")
+             out-path (filename/join (out-dir . path))
+             out-file (lists/flatten ((erlang/binary_to_list out-path)
+                                      . (get-extension options))))
+         (filelib/ensure_dir out-path)
+         (file/write_file out-file binary))))))
+
+(defn+ has-errors? (ctx)
+  (case ctx
+    (_ (when (erlang/is_tuple ctx))
+       (let* (errors (joxa-cmp-ctx/get-context :errors ctx)
+             warnings (joxa-cmp-ctx/get-context :warnings ctx))
+         (erlang/or
+          (erlang/> (erlang/length errors) 0)
+          (erlang/> (erlang/length warnings) 0))))
+    (_
+     :true)))
+
+(defn do-file-transition (_trans-state path ctx)
+  (let* (result (joxa-cmp-ctx/get-raw-context ctx))
+    (case result
+      (val (when (erlang/== (erlang/element 1 val) :context))
+           (case (has-errors? val)
+             (:false
+              (save-output (joxa-cmp-ctx/get-context :options result)
+                           (joxa-cmp-ctx/get-context :result result) result))
+             (:true
+              :ok))
+           val)
+      (_
+       :ok)))
+  {:undefined do-file-transition/3})
+
+(defn+ do-compile (filename options)
+  (case (joxa-cmp-ctx/start-context)
+    ({:ok ctx}
+     (joxa-cmp-ctx/namespace-transition-ctx ctx {:undefined do-file-transition/3})
+     (joxa-cmp-ctx/filename-ctx ctx filename)
+     (case (file/read_file filename)
+       ({:ok binary}
+        (let* (result (forms ctx binary options))
+          (report-errors-warnings ctx)
+          (do-file-transition :undefined (joxa-cmp-path/new-path) ctx)
+          (joxa-cmp-ctx/stop-context ctx)
+          result))
+       ({:error reason}
+        {:error  {:file-access reason filename}})))))
+
+
+
+;; Command Line Interface
+;; ----------------------
+;;
+;; This set of functions represents the command line interface and its
+;; description to Joxa.
+;;
+(defn usage (os-list)
+  (getopt/usage os-list "" "[option1 option2 ...] <joxa-file>"
+                '()))
+
+(defn+ option-spec-list ()
+  [{:to_ast \a "to_ast" :undefined "compile to core ast"}
+   {:to_core \c "to_core" :undefined "compile to core erlang"}
+   {:outdir \o "outdir" {:string "./"} "the directory to output beam files"}
+   {:bootstrap \b "bootstrap" :undefined
+               "Use the special limited bootstrap compiler"}])
+
+(defn+ main (args)
+  (case (getopt/parse (option-spec-list) args)
+    ({:ok {options [target]}}
+     (let* (raw-ctx (do-compile target options))
+       (case  (has-errors? raw-ctx)
+         (:true
+          (init/stop 127))
+         (:false
+          (init/stop 0)))))
+    (_
+     (usage (option-spec-list))
+     (init/stop 127))))
+
+(defn+ main ()
+  (main (init/get_plain_arguments)))
