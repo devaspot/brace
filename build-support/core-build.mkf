@@ -12,8 +12,7 @@ ASTDIR=$(SRCDIR)/ast
 
 BOOTSTRAP_ERLFLAGS=-noshell -pa $(BEAMDIR) $(BASE_ERLCFLAGS)
 
-COMP= $(ERL) $(ERLFLAGS) $(TEST_FLAGS) -s 'joxa-compiler' main \
-      -extra
+COMP= $(ERL) $(ERLFLAGS) $(TEST_FLAGS) -s 'joxa-compiler' main -extra
 
 
 SRCBEAMS = $(BEAMDIR)/joxa-cmp-util.beam \
@@ -81,7 +80,7 @@ $(BEAMDIR)/%.beam: $(ASTDIR)/%.ast $(BEAMDIR)/jxa_bootstrap.beam $(BEAMDIR)/.d
 	$(ERL) $(BOOTSTRAP_ERLFLAGS) \
             -s jxa_bootstrap do_bootstrap $(BEAMDIR) $< -s init stop
 
-$(BEAMDIR)/%.beam: $(SRCDIR)/%.jxa $(BEAMDIR)/.d $(BEAMDIR)/joxa-compiler.beam
+$(BEAMDIR)/%.beam: $(SRCDIR)/%.jxa $(BEAMDIR)/.d
 	$(COMP) -o $(BEAMDIR) $<
 
 $(TEST_EBIN)/%.beam: $(TESTDIR)/%.erl $(TEST_EBIN)/.d
@@ -120,10 +119,6 @@ eunit: build $(TESTBEAMS)
 
 proper: eunit $(SRCBEAMS) $(TESTBEAMS)
 	$(ERL) $(ERLFLAGS) $(TEST_FLAGS) -s 'joxa-build-support' main proper $(TEST_EBIN) -s init stop
-
-
-cucumber: eunit $(SRCBEAMS) $(TESTBEAMS)
-	$(ERL) $(ERLFLAGS) $(TEST_FLAGS) -s 'joxa-build-support' main cucumberl $(CURDIR) -s init stop
 
 bare-escript:
 	$(REBAR) skip_deps=true escriptize

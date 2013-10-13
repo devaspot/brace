@@ -52,14 +52,11 @@
     (erlang/list_to_atom
      (lists/flatten (io-lib/format "#:|~s~s|" [prefix (gensym-body)]))))
 
-(defn+ add-to-annots (cerl-thing annots)
-  (let* (old-annots (lists/filter (fn (el)
-                                     (case el
-                                       ({:rest _}
-                                        :true)
-                                       ({:not-rest _}
-                                        :true)
-                                       (_
-                                        :false)))
-                                 (cerl/get_ann cerl-thing)))
-    (cerl/set_ann cerl-thing (lists/append old-annots annots))))
+(defn+ add-to-annots (cerl-thing annots) cerl-thing)
+;    (let* (
+;        old-annots (lists/filter (fn (el)(case el
+;                                       ({:rest _} :true)
+;                                       ({:not-rest _} :true)
+;                                       (_  :false)))
+;                                 (cerl/get_ann cerl-thing)))
+;    (cerl/set_ann cerl-thing (lists/append old-annots annots))))

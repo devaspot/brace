@@ -5,7 +5,7 @@
              joxa-cmp-path
              joxa-cmp-ctx))
 
-(defspec make-literal ((joxa-cmp-path/path) (joxa-cmp-ctx/context) (erlang/term))  (cerl/cerl))
+;(defspec make-literal ((joxa-cmp-path/path) (joxa-cmp-ctx/context) (erlang/term))  (cerl/cerl))
 
 (defn make-literal-list (path0 annots ctx list)
   (case list

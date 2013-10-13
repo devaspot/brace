@@ -31,9 +31,9 @@
              joxa-cmp-path)
     (use (erlang :only (and/2))))
 
-(defspec  joxa-cmp-literal/make-literal ((joxa-cmp-path/path) (joxa-cmp-ctx/context)
-                                         (erlang/term)) (cerl/cerl))
-(defspec joxa-compiler/do-final-comp (joxa-cmp-ctx/context) (erlang/any))
+;(defspec  joxa-cmp-literal/make-literal ((joxa-cmp-path/path) (joxa-cmp-ctx/context)
+;                                         (erlang/term)) (cerl/cerl))
+;(defspec joxa-compiler/do-final-comp (joxa-cmp-ctx/context) (erlang/any))
 
 (defn get-exports (namespace)
   (let* (mod-info (erlang/make_fun namespace :module_info 1)

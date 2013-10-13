@@ -63,7 +63,7 @@
        ([]
         (joxa-shell/start))
        (targets
-        (call-builder targets options))))
+             (call-builder targets options))))
     (_
      (usage (option-spec-list))
      (init/stop 127))))
