@@ -1,9 +1,9 @@
 (ns fibonacci
     (use (erlang :only (>/2 -/2 +/2))))
 
-(defn+ fibo (n)
-    (case n
+(defn+ fibo (N)
+    (case N
         (0 0)
         (1 1)
-        (_ (when (> n 0))
-            (+ (fibo (- n 1)) (fibo (- n 2))))))
+        (_ (when (> N 0))
+            (+ (fibo (- N 1)) (fibo (- N 2))))))

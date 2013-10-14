@@ -24,7 +24,7 @@
         result (lists/foldl (fn (el acc)
 ;            (io/format "resolve deps: ~p~n" [el])
             (case el
-                ({{function line name arity args body} {deps _}}
+                ({{function line name arity clauses} deps _}
 ;                    (io/format "name arity: ~p/~p~n" [name arity])
                     (case acc
                         ({unresolved0 resolved0}

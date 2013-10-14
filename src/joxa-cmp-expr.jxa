@@ -54,7 +54,7 @@
 
 (defn make-remote-rest-fun (ctx namespace function arity rest-arity)
   (let* (arg-list (lists/map (fn (_)
-                                {:var 0 (joxa-cmp-util/gensym)})
+                                {:var 8 (joxa-cmp-util/gensym)})
                             (lists/seq 1 arity))
                  annots [:compiler_generated])
     (joxa-cmp-ctx/incr-fun-index-ctx ctx)
@@ -194,11 +194,11 @@
          (joxa-cmp-ctx/push-scope-ctx ctx)
          (joxa-cmp-ctx/add-reference-to-scope-ctx binding-path1 ctx var
                                      (get-expr-arity cerl-expr)
-                                     (cerl/ann_c_var annots var))
+                                     {:var (line-number annots) var})
          (let* (cerl-body (continuation  body-path0 (joxa-cmp-path/incr-path binding-path0) ctx))
            (joxa-cmp-ctx/pop-scope-ctx ctx)
            (cerl/ann_c_let annots
-                           [(cerl/ann_c_var annots var)]
+                           [{:var (line-number annots) var}]
                            cerl-expr
                            cerl-body)))))))
 
@@ -233,12 +233,12 @@
         (joxa-cmp-ctx/annots-from-context :traverse path0 ctx))
     (case arg-list
       ([:&rest rest-arg]
-       {(lists/reverse ((cerl/ann_c_var annots rest-arg) . acc)) :true})
+       {(lists/reverse ([{:var (line-number annots) rest-arg}] . acc)) :true})
       ((:&rest . rest-arg)
        (joxa-cmp-ctx/add-error-ctx ctx path0 :invalid-rest-arguments)
        {(lists/reverse acc) :false})
       ((a . rest) (when (erlang/is_atom a))
-       (gen-args (joxa-cmp-path/incr-path path0) ctx rest ((cerl/ann_c_var annots a) . acc)))
+       (gen-args (joxa-cmp-path/incr-path path0) ctx rest ([{:var (line-number annots) a}] . acc)))
       ([]
        {(lists/reverse acc) :false})
       (_
@@ -251,7 +251,7 @@
     (lists/foreach (fn (arg)
                        (case arg
                          (_ (when (erlang/is_atom arg))
-                            (joxa-cmp-ctx/add-reference-to-scope-ctx path0 ctx arg -1 {:var 0 arg}))
+                            (joxa-cmp-ctx/add-reference-to-scope-ctx path0 ctx arg -1 {:var 8 arg}))
                          (else
                           (joxa-cmp-ctx/add-error-ctx ctx path0 {:arg-is-not-proper-name else}))))
                    args0)

@@ -34,30 +34,32 @@
 ;; functions.
 
 (definline handle-errors-and-warnings (ctx errors warnings)
-  (case (erlang/> (erlang/length errors) 0)
-    (:true
-     (joxa-cmp-ctx/add-error-ctx ctx (joxa-cmp-path/new-path) {:system-errors errors}))
-    (:false
-     :ok))
-  (case (erlang/> (erlang/length warnings) 0)
-    (:true
-     (joxa-cmp-ctx/add-warning-ctx ctx (joxa-cmp-path/new-path) {:system-warnings warnings}))
-    (:false
-     :ok)))
+    (case (erlang/is_list errors) 
+        (:true
+            (case (erlang/> (erlang/length errors) 0)
+                (:true (joxa-cmp-ctx/add-error-ctx ctx (joxa-cmp-path/new-path) {:system-errors errors}))
+                (:false :ok)))
+        (:false :ok))
+    (case (erlang/is_list errors)
+        (:true
+            (case (erlang/> (erlang/length warnings) 0)
+                (:true (joxa-cmp-ctx/add-warning-ctx ctx (joxa-cmp-path/new-path) {:system-warnings warnings}))
+                (:false :ok)))
+        (:false :ok)))
 
 
 (defn gather-inline-funs (ctx)
   (let* (defs (joxa-cmp-ctx/definitions-ctx ctx)
-        inlinables
-        (lists/foldl (fn (cvar acc)
-                         (case cvar
-                           ({name-arity {_ body _ _}}
-                            (case (lists/member :inline  (cerl/get_ann body))
-                              (:true
-                               (name-arity . acc))
-                               (:false acc)))))
-                     []
-                     defs))
+        inlinables [])
+;        (lists/foldl (fn (cvar acc)
+;                         (case cvar
+;                           ({name-arity {body _ _}}
+;                            (case (lists/member :inline  (cerl/get_ann body))
+;                              (:true
+;                               (name-arity . acc))
+;                               (:false acc)))))
+;                     []
+;                     defs))
     (case inlinables
       ([] [])
       (_
@@ -76,6 +78,12 @@
          (:undefined [])
          (_ :native)))
       (_ []))))
+
+(defn to_list (var)
+    (case var
+        (x (when (erlang/is_integer x)) (erlang/integer_to_list x))
+        (x (when (erlang/is_atom x)) (erlang/atom_to_list x))
+        (x (when (erlang/is_list x)) x)))
 
 (definline compile-options (ctx type)
     (let* (
@@ -98,36 +106,17 @@
             ({ok errors result warnings} (handle-errors-and-warnings ctx errors warnings) result)
             ({error errors warnings} (handle-errors-and-warnings ctx errors warnings) :error)))))
 
-(defn make-namespace-info (ctx)
-  (let* (namespace-name (cerl/c_atom (joxa-cmp-ctx/namespace-name-ctx ctx))
-        argless-body (cerl/c_call (cerl/c_atom :erlang)
-                                  (cerl/c_atom :get_module_info)
-                                  [namespace-name])
-        detail-var (joxa-cmp-util/gensym)
-        var-name (cerl/c_var detail-var)
-        arg-body (cerl/c_call (cerl/c_atom :erlang)
-                              (cerl/c_atom :get_module_info)
-                              [namespace-name var-name]))
-    (joxa-cmp-ctx/add-exported-def-ctx (joxa-cmp-path/new-path) ctx
-                          [:compiler_generated] :module_info []
-                          argless-body
-                          :replace)
-    (joxa-cmp-ctx/add-exported-def-ctx (joxa-cmp-path/new-path) ctx
-                          [:compiler_generated] :module_info
-                          [var-name] arg-body :replace)))
-
 (defn compile-types (ctx)
-  (let* (exported-types (sets/to_list (joxa-cmp-ctx/type-exports-ctx ctx))
+    (let* (exported-types (sets/to_list (joxa-cmp-ctx/type-exports-ctx ctx))
         all-types (ec-dictionary/to-list (joxa-cmp-ctx/types-ctx ctx)))
-    ({(cerl/c_atom :export_type) (cerl/make_data {:atomic exported-types} [])} .
-     (lists/map (fn (el)
-                    (case el
-                      ({_ attr}
-                       attr))) all-types))))
+        {:attribute 120 :export_type (lists/flatten (exported-types .
+            (lists/map (fn (el) (case el ({_ attr} attr))) all-types)))}))
 
 (defn+ compilable? (ctx)
-  (erlang/not (erlang/or (joxa-cmp-checks/has-unresolved-dependencies? ctx)
-                          (joxa-cmp-checks/has-errors-or-warnings? ctx))))
+    (erlang/not 
+        (erlang/or 
+            (joxa-cmp-checks/has-unresolved-dependencies? ctx)
+            (joxa-cmp-checks/has-errors-or-warnings? ctx))))
 
 (defn post-process-macros (ctx)
   (let* (unexported-macros (joxa-cmp-ctx/unexported-macros-ctx ctx)
@@ -236,23 +225,18 @@
             (post-processing compile-type ctx)
 ;            (make-namespace-info ctx)
 ;            (joxa-cmp-joxa-info/make-joxa-info ctx)
-            (io/format "definitions: ~p~n" [(joxa-cmp-ctx/get-definitions ctx)])
             (let*
               ( annots (joxa-cmp-ctx/line-ctx ctx)
-                namespace-name [{:attribute 1 :file { (joxa-cmp-ctx/namespace-name-ctx ctx) 1 }}]
-                exports (joxa-cmp-ctx/get-context-exports ctx)
-                attrs (lists/append (joxa-cmp-ctx/attrs-ctx ctx) (compile-types ctx))
+                namespace-name [{:attribute 1 :file { (to_list (joxa-cmp-ctx/namespace-name-ctx ctx)) 1 }}
+                                {:attribute 1 :module (joxa-cmp-ctx/namespace-name-ctx ctx) }]
+                exports [{:attribute 1 :export (joxa-cmp-ctx/get-context-exports ctx)}]
+                attrs [(lists/append (joxa-cmp-ctx/attrs-ctx ctx) (compile-types ctx))]
                 defs (lists/map (fn (def) (case def
                         ({body _ _} body)
                         (else (erlang/throw {:error-processing-defs else})))) (joxa-cmp-ctx/get-definitions ctx))
-                east (namespace-name . exports))
+                east (lists/flatten (namespace-name . (attrs . (exports . defs)))))
                 (case compile-type
-                    (:final
-                        (io/format "C-Stage: ~p~n" [compile-type])
-                        (io/format "N-Space: ~p~n" [namespace-name])
-                        (io/format "Exports: ~p~n" [exports])
-                        (io/format "Attribs: ~p~n" [attrs])
-                        (io/format "Defines: ~p~n" [defs]))
+                    (:final (io/format "AST: ~p~n" [east]))
                     (_ :ok))
                 (joxa-cmp-ctx/result-ctx ctx (erl-comp ctx east compile-type))))
         (:false (when (erlang/== compile-type :final)) :error)
@@ -459,13 +443,12 @@
              (internal-comp-interactive ctx interactive-name rest result1)))))))))
 
 (defn+ comp-interactive (ctx interactive-name input options)
-  (joxa-cmp-ctx/set-context-all-ctx ctx [{:options options}])
-  (internal-comp-interactive ctx interactive-name input :defn))
+    (joxa-cmp-ctx/set-context-all-ctx ctx [{:options options}])
+    (internal-comp-interactive ctx interactive-name input :defn))
 
 (defn+ stop-interactive (ctx)
-  (let* (raw-ctx (joxa-cmp-ctx/get-raw-context ctx))
-    (joxa-cmp-ctx/stop-context ctx)
-    raw-ctx))
+    (let* (raw-ctx (joxa-cmp-ctx/get-raw-context ctx))
+        (joxa-cmp-ctx/stop-context ctx) raw-ctx))
 
 ;; Compilation Dispatch Framework
 ;; ------------------------------

@@ -202,19 +202,21 @@
                             (joxa-cmp-path/traverse-incr-path path0) ctx)
                         cerl-guard (joxa-cmp-expr/make-expr (joxa-cmp-path/traverse-incr-path
                             (joxa-cmp-path/traverse-incr-path path0)) ctx guards)
-                        cerl-body (joxa-cmp-expr/make-seq (joxa-cmp-path/incr-path 2 path0) ctx body))
+                        cerl-body (joxa-cmp-expr/make-seq (joxa-cmp-path/incr-path 2 path0) ctx body)
+                        guard (case (cerl-guard . pattern-guards) ([] []) (x [x])))
                     (joxa-cmp-ctx/pop-scope-ctx ctx)
 ;                    (io/format "case pattern-guards: ~p~n" [cerl-guard])
 ;                    (= :true (check-guards ctx 
 ;                            (joxa-cmp-path/traverse-incr-path path0)
 ;                            (make-guards guard-annots (cerl-guard . pattern-guards))))
-                    {:clause (line-number annots) [cerl-pattern] (cerl-guard . pattern-guards) cerl-body}))))
+                    {:clause (line-number annots) [cerl-pattern] guard [cerl-body]}))))
       ((pattern . body)
        (case (make-pattern-element (joxa-cmp-path/traverse-path path0) ctx [] pattern)
          ({pattern-guards cerl-pattern}
-          (let* (cerl-body (joxa-cmp-expr/make-seq (joxa-cmp-path/incr-path path0) ctx body))
+          (let* (cerl-body (joxa-cmp-expr/make-seq (joxa-cmp-path/incr-path path0) ctx body)
+                guard (case pattern-guards ([] []) (x [x])))
                 (joxa-cmp-ctx/pop-scope-ctx ctx)
-                {:clause (line-number annots) [cerl-pattern] (make-guards annots pattern-guards) cerl-body}))
+                {:clause (line-number annots) [cerl-pattern] guard [cerl-body]}))
          (_ (joxa-cmp-ctx/add-error-r-nil-ctx ctx path0 :invalid-case-clause))))
       (_ (joxa-cmp-ctx/add-error-r-nil-ctx ctx path0 :invalid-case-clause)))))
 

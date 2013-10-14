@@ -108,10 +108,10 @@
       (_
        (joxa-cmp-ctx/add-error-r-nil-ctx ctx path0 {:invalid-reference form})))))
 
+; TODO
 (defn+ make-apply-rest-fun (ctx f-var arity rest-arity)
   (let* (arg-list (lists/map (fn (_)
-                                (cerl/ann_c_var [:compiler_generated]
-                                                (joxa-cmp-util/gensym)))
+                                {:var 8 (joxa-cmp-util/gensym)})
                             (lists/seq 1 arity))
         annots [:compiler_generated])
     (joxa-cmp-ctx/incr-fun-index-ctx ctx)
@@ -169,13 +169,11 @@
                             (make-rest-apply-var ctx annots (joxa-cmp-util/add-to-annots var annots) arg-list))
                         ({:apply :not-rest _ {name arity}} (when (erlang/== :false macro-only?))
                             (joxa-cmp-ctx/add-fun-dep-ctx ctx name arity)
-;                            (io/format "~p~n" [])
-                            (cerl/ann_c_apply annots (cerl/ann_c_fname call-annots name arity) arg-list))
+                            {:call (line-number annots) {:atom (line-number call-annots) name} arg-list})
                         ({:apply :rest _ {name arity}} (when (erlang/== :false macro-only?))
                             (joxa-cmp-ctx/add-fun-dep-ctx ctx name arity)
-                            (cerl/ann_c_apply annots
-                                (cerl/ann_c_fname call-annots name arity)
-                                (called->rest arg-list 1 arity [])))
+                            {:call (line-number annots) {:atom (line-number call-annots) name} 
+                                (called->rest arg-list 1 arity [])})
                         ({:remote :not-rest _ {namespace function possible-arity}} (when (erlang/== :false macro-only?))
                             {:call (line-number annots)
                                 {:remote (line-number annots) 
